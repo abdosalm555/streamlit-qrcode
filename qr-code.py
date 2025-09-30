@@ -160,6 +160,6 @@ def main(public_url):
 
 if __name__ == "__main__":
     # public_url injected from Colab startup
-    st.session_state.setdefault("public_url", "")
+    st.session_state.setdefault("public_url", "https://app-qrcode-kbtgae6rj8r2qrdxprggcm.streamlit.app/")
     main(st.session_state["public_url"])
 
