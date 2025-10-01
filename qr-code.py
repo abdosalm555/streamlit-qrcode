@@ -2,7 +2,7 @@ import streamlit as st
 import qrcode
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 import base64
 
@@ -34,6 +34,17 @@ def get_end_of_day():
     now = datetime.now()
     return datetime(now.year, now.month, now.day, 23, 59, 59)
 
+def parse_estimated_time(time_str):
+    """Parses '1 hour', '30 mins' etc. to timedelta"""
+    time_str = time_str.lower()
+    if "hour" in time_str:
+        num = int(time_str.split()[0])
+        return timedelta(hours=num)
+    elif "min" in time_str:
+        num = int(time_str.split()[0])
+        return timedelta(minutes=num)
+    return timedelta(minutes=30)  # fallback
+
 # ---------------------------
 # Page 1: Generator
 # ---------------------------
@@ -61,15 +72,14 @@ def page_generator(public_url):
                 "purpose": purpose,
                 "estimated_time": estimated_time,
                 "scan_time": None,
-                "expiry_time": expiry_time.isoformat()
+                "expiry_time": expiry_time.isoformat(),
+                "id_uploaded": False
             }
         }
         save_data(data)
 
-        qr_bytes = generate_qr(scan_link)
-        st.image(qr_bytes, caption="Visitor QR Code")
         st.success(f"✅ Share this link with the visitor:\n{scan_link}")
-        st.info(f"QR valid until **{expiry_time.strftime('%H:%M:%S')}** today")
+        st.info(f"QR can be used until **{expiry_time.strftime('%H:%M:%S')}** today")
 
 # ---------------------------
 # Page 2: Visitor
@@ -97,7 +107,20 @@ def page_visitor():
         st.error("⏱ QR Expired (End of Day)")
         return
 
-    st.subheader("QR Code Preview")
+    if not visitor.get("id_uploaded"):
+        st.subheader("Upload Identification")
+        uploaded_id = st.file_uploader("Upload your ID (Image Only)", type=["jpg", "jpeg", "png"])
+        if uploaded_id:
+            visitor["id_uploaded"] = True
+            visitor["id_filename"] = uploaded_id.name  # For simulation, not saving actual file
+            data["visitor"] = visitor
+            save_data(data)
+            st.success("✅ ID uploaded successfully.")
+        else:
+            st.warning("⚠ Please upload your ID to proceed.")
+            return  # Don't show QR until ID is uploaded
+
+    st.subheader("QR Code for Gate Entry")
     scan_link = f"{st.session_state.get('public_url', '')}/?page=Visitor&token={token}"
     qr_bytes = generate_qr(scan_link)
     st.image(qr_bytes, caption="Scanned QR Code")
@@ -137,17 +160,32 @@ def page_security():
     st.write(f"**Purpose:** {visitor['purpose']}")
     st.write(f"**Estimated Time:** {visitor['estimated_time']}")
     
-    if visitor.get("scan_time"):
-        st.write(f"**Scanned At:** {visitor['scan_time']}")
-    else:
-        st.warning("⚠ Visitor has not scanned yet.")
+    scan_time = visitor.get("scan_time")
+    if scan_time:
+        scanned_at = datetime.fromisoformat(scan_time)
+        st.write(f"**Scanned At:** {scanned_at.strftime('%H:%M:%S')}")
 
-    st_autorefresh(interval=1000, key="security_refresh")
-    remaining = expiry_time - datetime.now()
-    if remaining.total_seconds() <= 0:
-        st.error("⏱ QR Expired (End of Day)")
+        # Countdown logic
+        estimated_duration = parse_estimated_time(visitor['estimated_time'])
+        end_time = scanned_at + estimated_duration
+        now = datetime.now()
+        remaining = end_time - now
+
+        if remaining.total_seconds() > 0:
+            st.success(f"⏳ Time Left: {str(remaining).split('.')[0]}")
+        else:
+            st.error("⏱ Visitor's estimated time has expired.")
+
     else:
-        st.warning(f"⏳ Time Left Today: {str(remaining).split('.')[0]}")
+        st.warning("⚠ Visitor has not scanned in yet.")
+
+    # Also show how long until end of day
+    eod_remaining = expiry_time - datetime.now()
+    st.caption(f"🕛 QR valid until: {expiry_time.strftime('%H:%M:%S')} (end of day)")
+    st.caption(f"📆 Time left today: {str(eod_remaining).split('.')[0]}")
+
+    # Auto-refresh
+    st_autorefresh(interval=1000, key="security_refresh")
 
 # ---------------------------
 # Main App Navigation
@@ -170,4 +208,3 @@ def main(public_url):
 if __name__ == "__main__":
     st.session_state.setdefault("public_url", "https://app-qrcode-kbtgae6rj8r2qrdxprggcm.streamlit.app/")
     main(st.session_state["public_url"])
-
