@@ -41,19 +41,25 @@ def page_generator(public_url):
     st.title("🔑 QR Code Generator")
 
     visitor_name = st.text_input("Visitor Name")
-    visitor_id = st.text_input("Visitor ID/License Number")
+    homeowner_name = st.text_input("Name of Home Owner")
+    block_number = st.text_input("Block Number")
+    purpose = st.text_area("Purpose of Visit")
+    estimated_time = st.text_input("Estimated Time of Stay (e.g., 1 hour, 30 mins)")
 
     if st.button("Generate QR"):
         token = base64.urlsafe_b64encode(os.urandom(6)).decode("utf-8")
         scan_link = f"{public_url}/?page=Visitor&token={token}"
 
-        # Store visitor reservation (expiry set to end of today)
         expiry_time = get_end_of_day()
+
         data = {
             "visitor": {
-                "name": visitor_name,
-                "id_number": visitor_id,
                 "token": token,
+                "visitor_name": visitor_name,
+                "homeowner_name": homeowner_name,
+                "block_number": block_number,
+                "purpose": purpose,
+                "estimated_time": estimated_time,
                 "scan_time": None,
                 "expiry_time": expiry_time.isoformat()
             }
@@ -62,8 +68,7 @@ def page_generator(public_url):
 
         qr_bytes = generate_qr(scan_link)
         st.image(qr_bytes, caption="Visitor QR Code")
-
-        st.success(f"✅ Share this link with visitor:\n{scan_link}")
+        st.success(f"✅ Share this link with the visitor:\n{scan_link}")
         st.info(f"QR valid until **{expiry_time.strftime('%H:%M:%S')}** today")
 
 # ---------------------------
@@ -92,17 +97,18 @@ def page_visitor():
         st.error("⏱ QR Expired (End of Day)")
         return
 
-    st.write(f"Welcome **{visitor['name']}**, please upload your ID for verification.")
+    st.subheader("QR Code Preview")
+    scan_link = f"{st.session_state.get('public_url', '')}/?page=Visitor&token={token}"
+    qr_bytes = generate_qr(scan_link)
+    st.image(qr_bytes, caption="Scanned QR Code")
 
-    uploaded_id = st.file_uploader("Upload ID / License", type=["png", "jpg", "jpeg", "pdf"])
-
-    if uploaded_id and st.button("Submit & Confirm Entry"):
+    if st.button("Confirm Entry"):
         scan_time = datetime.now()
         visitor["scan_time"] = scan_time.isoformat()
         data["visitor"] = visitor
         save_data(data)
 
-        st.success("✅ Verification complete. You may proceed to the gate.")
+        st.success("✅ Entry confirmed. Welcome!")
         st.info(f"⏳ QR valid until {expiry_time.strftime('%H:%M:%S')} today")
 
 # ---------------------------
@@ -125,14 +131,17 @@ def page_security():
         return
 
     st.subheader("Visitor Information")
-    st.write(f"**Name:** {visitor['name']}")
-    st.write(f"**ID Number:** {visitor['id_number']}")
+    st.write(f"**Visitor Name:** {visitor['visitor_name']}")
+    st.write(f"**Homeowner Name:** {visitor['homeowner_name']}")
+    st.write(f"**Block Number:** {visitor['block_number']}")
+    st.write(f"**Purpose:** {visitor['purpose']}")
+    st.write(f"**Estimated Time:** {visitor['estimated_time']}")
+    
     if visitor.get("scan_time"):
         st.write(f"**Scanned At:** {visitor['scan_time']}")
     else:
         st.warning("⚠ Visitor has not scanned yet.")
 
-    # Auto-refresh every second
     st_autorefresh(interval=1000, key="security_refresh")
     remaining = expiry_time - datetime.now()
     if remaining.total_seconds() <= 0:
@@ -159,7 +168,6 @@ def main(public_url):
     PAGES[page]()
 
 if __name__ == "__main__":
-    # public_url injected from Colab startup
     st.session_state.setdefault("public_url", "https://app-qrcode-kbtgae6rj8r2qrdxprggcm.streamlit.app/")
     main(st.session_state["public_url"])
 
