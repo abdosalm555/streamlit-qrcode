@@ -42,6 +42,7 @@ def parse_estimated_time(time_str):
     elif "min" in time_str:
         num = int(time_str.split()[0])
         return timedelta(minutes=num)
+    # default fallback
     return timedelta(minutes=30)
 
 # ---------------------------
@@ -57,9 +58,14 @@ def page_generator(public_url):
     estimated_time = st.text_input("Estimated Time of Stay (e.g., 1 hour, 30 mins)")
 
     if st.button("Generate QR"):
+        # generate token
         token = base64.urlsafe_b64encode(os.urandom(6)).decode("utf-8")
-        qr_scan_link = f"{public_url}/?page=Security&token={token}"  # QR for security scan
-        visitor_link = f"{public_url}/?page=Visitor&token={token}"   # Visitor link
+
+        # links
+        # The visitor should use this link:
+        visitor_link = f"{public_url}/?page=Visitor&token={token}"
+        # The QR will encode a link to security:
+        qr_scan_link = f"{public_url}/?page=Security&token={token}"
 
         expiry_time = get_end_of_day()
 
@@ -78,11 +84,11 @@ def page_generator(public_url):
         }
         save_data(data)
 
-        qr_bytes = generate_qr(qr_scan_link)
-        st.image(qr_bytes, caption="Security QR Code")
-
-        st.success(f"✅ Share this link with the visitor:\n{visitor_link}")
-        st.info(f"QR can be used until **{expiry_time.strftime('%H:%M:%S')}** today")
+        # **Do not show QR here** — only show visitor link
+        st.success("✅ QR generation successful.")
+        st.write("Share this link with the visitor:")
+        st.code(visitor_link)
+        st.info(f"Note: QR is valid until **{expiry_time.strftime('%H:%M:%S')}** today")
 
 # ---------------------------
 # Page 2: Visitor
@@ -90,12 +96,12 @@ def page_generator(public_url):
 def page_visitor():
     st.title("🙋 Visitor Check-In")
 
-    query_params = st.query_params
-    token = query_params.get("token", None)
-
-    if not token:
-        st.error("❌ Invalid or missing QR token")
+    query_params = st.experimental_get_query_params()
+    token_list = query_params.get("token")
+    if not token_list:
+        st.error("❌ Invalid or missing QR token parameter")
         return
+    token = token_list[0]
 
     data = load_data()
     visitor = data.get("visitor", {})
@@ -109,23 +115,26 @@ def page_visitor():
         st.error("⏱ QR Expired (End of Day)")
         return
 
+    # Require ID upload first
     if not visitor.get("id_uploaded"):
         st.subheader("Upload Identification")
         uploaded_id = st.file_uploader("Upload your ID (Image Only)", type=["jpg", "jpeg", "png"])
         if uploaded_id:
             visitor["id_uploaded"] = True
-            visitor["id_filename"] = uploaded_id.name  # simulate storage
+            visitor["id_filename"] = uploaded_id.name
             data["visitor"] = visitor
             save_data(data)
             st.success("✅ ID uploaded successfully.")
         else:
             st.warning("⚠ Please upload your ID to proceed.")
-            return  # Don't show QR yet
+            return
 
     st.subheader("QR Code for Gate Entry")
-    scan_link = f"{st.session_state.get('public_url', '')}/?page=Security&token={token}"
-    qr_bytes = generate_qr(scan_link)
-    st.image(qr_bytes, caption="Security QR Code")
+    # The QR points to security page
+    public_url = st.session_state.get("public_url", "")
+    qr_link = f"{public_url}/?page=Security&token={token}"
+    qr_bytes = generate_qr(qr_link)
+    st.image(qr_bytes, caption="Scan this at the gate")
 
     if st.button("Confirm Entry"):
         if not visitor.get("scan_time"):
@@ -135,7 +144,7 @@ def page_visitor():
             save_data(data)
             st.success("✅ Entry confirmed. Welcome!")
         else:
-            st.warning("⚠ This QR has already been confirmed earlier.")
+            st.warning("⚠ This QR has already been used.")
 
 # ---------------------------
 # Page 3: Security
@@ -144,13 +153,17 @@ def page_security():
     from streamlit_autorefresh import st_autorefresh
     st.title("🛡 Security Dashboard")
 
-    query_params = st.query_params
-    token = query_params.get("token", None)
+    query_params = st.experimental_get_query_params()
+    token_list = query_params.get("token")
+    if not token_list:
+        st.error("❌ Missing token for security scan")
+        return
+    token = token_list[0]
 
     data = load_data()
     visitor = data.get("visitor")
 
-    if not visitor or (token and visitor.get("token") != token):
+    if not visitor or visitor.get("token") != token:
         st.error("❌ No matching visitor or invalid token")
         return
 
@@ -159,14 +172,14 @@ def page_security():
         st.error("⏱ QR Expired (End of Day)")
         return
 
-    scan_time = visitor.get("scan_time")
-    if scan_time:
-        st.error("⚠ This QR code has already been scanned and is no longer valid.")
-        scanned_at = datetime.fromisoformat(scan_time)
-        st.write(f"**Originally Scanned At:** {scanned_at.strftime('%H:%M:%S')}")
+    # If already scanned, disallow
+    if visitor.get("scan_time"):
+        st.error("⚠ This QR code has already been used.")
+        scanned_at = datetime.fromisoformat(visitor["scan_time"])
+        st.write(f"Originally scanned at: {scanned_at.strftime('%H:%M:%S')}")
         return
 
-    # Show visitor info
+    # Show visitor details, allow scan
     st.subheader("Visitor Information")
     st.write(f"**Visitor Name:** {visitor['visitor_name']}")
     st.write(f"**Homeowner Name:** {visitor['homeowner_name']}")
@@ -174,33 +187,22 @@ def page_security():
     st.write(f"**Purpose:** {visitor['purpose']}")
     st.write(f"**Estimated Time:** {visitor['estimated_time']}")
 
-    # Confirm scan
     if st.button("Confirm Visitor Entry"):
         scan_time = datetime.now()
         visitor["scan_time"] = scan_time.isoformat()
         data["visitor"] = visitor
         save_data(data)
-        st.success("✅ Visitor scanned and entry logged.")
+        st.success("✅ Visitor scanned and entry recorded.")
 
-        # Show countdown
-        estimated_duration = parse_estimated_time(visitor['estimated_time'])
-        end_time = scan_time + estimated_duration
-        remaining = end_time - datetime.now()
-
-        if remaining.total_seconds() > 0:
-            st.info(f"⏳ Time Left: {str(remaining).split('.')[0]}")
-        else:
-            st.warning("⏱ Visitor’s estimated time has expired.")
-
-    # Show QR overall expiry
+    # Show QR expiry info
     eod_remaining = expiry_time - datetime.now()
     st.caption(f"🕛 QR valid until: {expiry_time.strftime('%H:%M:%S')}")
-    st.caption(f"📆 Time left today: {str(eod_remaining).split('.')[0]}")
+    st.caption(f"Time left today: {str(eod_remaining).split('.')[0]}")
 
     st_autorefresh(interval=1000, key="security_refresh")
 
 # ---------------------------
-# Main App Navigation
+# Main Navigation
 # ---------------------------
 def main(public_url):
     PAGES = {
@@ -209,7 +211,7 @@ def main(public_url):
         "Security": page_security,
     }
 
-    default_page = st.query_params.get("page", "Generator")
+    default_page = st.experimental_get_query_params().get("page", ["Generator"])[0]
     if default_page not in PAGES:
         default_page = "Generator"
 
