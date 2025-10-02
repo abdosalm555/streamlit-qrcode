@@ -85,6 +85,7 @@ def page_generator(public_url):
 # Page 2: Visitor
 # ---------------------------
 def page_visitor():
+    from streamlit_autorefresh import st_autorefresh
     st.title("🙋 Visitor Check-In")
 
     query_params = st.query_params
@@ -112,7 +113,7 @@ def page_visitor():
         uploaded_id = st.file_uploader("Upload your ID (Image Only)", type=["jpg", "jpeg", "png"])
         if uploaded_id:
             visitor["id_uploaded"] = True
-            visitor["id_filename"] = uploaded_id.name  # For simulation, not saving actual file
+            visitor["id_filename"] = uploaded_id.name  # Simulated save
             data["visitor"] = visitor
             save_data(data)
             st.success("✅ ID uploaded successfully.")
@@ -121,19 +122,29 @@ def page_visitor():
             return  # Don't show QR until ID is uploaded
 
     st.subheader("QR Code for Gate Entry")
+    # 🔹 QR now points to Security page
     scan_link = f"{st.session_state.get('public_url', '')}/?page=Security&token={token}"
     qr_bytes = generate_qr(scan_link)
     st.image(qr_bytes, caption="QR Code for Security to Scan")
 
+    # Countdown only shows if security confirmed entry
+    if visitor.get("scan_time"):
+        st.subheader("⏳ Time Remaining")
 
-    if st.button("Confirm Entry"):
-        scan_time = datetime.now()
-        visitor["scan_time"] = scan_time.isoformat()
-        data["visitor"] = visitor
-        save_data(data)
+        scanned_at = datetime.fromisoformat(visitor["scan_time"])
+        estimated_duration = parse_estimated_time(visitor["estimated_time"])
+        end_time = scanned_at + estimated_duration
+        now = datetime.now()
+        remaining = end_time - now
 
-        st.success("✅ Entry confirmed. Welcome!")
-        st.info(f"⏳ QR valid until {expiry_time.strftime('%H:%M:%S')} today")
+        if remaining.total_seconds() > 0:
+            st.success(f"Time Left: {str(remaining).split('.')[0]}")
+        else:
+            st.error("⏱ Visitor's estimated time has expired.")
+
+        st_autorefresh(interval=1000, key="visitor_refresh")
+    else:
+        st.info("⌛ Waiting for Security to confirm your entry.")
 
 # ---------------------------
 # Page 3: Security
@@ -142,10 +153,13 @@ def page_security():
     from streamlit_autorefresh import st_autorefresh
     st.title("🛡 Security Dashboard")
 
+    query_params = st.query_params
+    token = query_params.get("token", None)
+
     data = load_data()
     visitor = data.get("visitor")
 
-    if not visitor:
+    if not visitor or (token and visitor.get("token") != token):
         st.info("No active visitor records yet.")
         return
 
@@ -160,10 +174,17 @@ def page_security():
     st.write(f"**Block Number:** {visitor['block_number']}")
     st.write(f"**Purpose:** {visitor['purpose']}")
     st.write(f"**Estimated Time:** {visitor['estimated_time']}")
-    
-    scan_time = visitor.get("scan_time")
-    if scan_time:
-        scanned_at = datetime.fromisoformat(scan_time)
+
+    if not visitor.get("scan_time"):
+        if st.button("✅ Confirm Entry"):
+            scan_time = datetime.now()
+            visitor["scan_time"] = scan_time.isoformat()
+            data["visitor"] = visitor
+            save_data(data)
+            st.success("Entry confirmed. Timer started.")
+            st.rerun()
+    else:
+        scanned_at = datetime.fromisoformat(visitor["scan_time"])
         st.write(f"**Scanned At:** {scanned_at.strftime('%H:%M:%S')}")
 
         # Countdown logic
@@ -177,16 +198,13 @@ def page_security():
         else:
             st.error("⏱ Visitor's estimated time has expired.")
 
-    else:
-        st.warning("⚠ Visitor has not scanned in yet.")
+        # Auto-refresh
+        st_autorefresh(interval=1000, key="security_refresh")
 
-    # Also show how long until end of day
+    # Show how long until end of day
     eod_remaining = expiry_time - datetime.now()
     st.caption(f"🕛 QR valid until: {expiry_time.strftime('%H:%M:%S')} (end of day)")
     st.caption(f"📆 Time left today: {str(eod_remaining).split('.')[0]}")
-
-    # Auto-refresh
-    st_autorefresh(interval=1000, key="security_refresh")
 
 # ---------------------------
 # Main App Navigation
