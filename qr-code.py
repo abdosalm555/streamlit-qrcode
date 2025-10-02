@@ -57,7 +57,7 @@ def page_generator(public_url):
     purpose = st.text_area("Purpose of Visit")
     estimated_time = st.text_input("Estimated Time of Stay (e.g., 1 hour, 30 mins)")
 
-    if st.button("Generate QR"):
+    if st.button("Generate QR Link"):
         token = base64.urlsafe_b64encode(os.urandom(6)).decode("utf-8")
         scan_link = f"{public_url}/?page=Visitor&token={token}"
 
@@ -121,9 +121,10 @@ def page_visitor():
             return  # Don't show QR until ID is uploaded
 
     st.subheader("QR Code for Gate Entry")
-    scan_link = f"{st.session_state.get('public_url', '')}/?page=Visitor&token={token}"
+    scan_link = f"{st.session_state.get('public_url', '')}/?page=Security&token={token}"
     qr_bytes = generate_qr(scan_link)
-    st.image(qr_bytes, caption="Scanned QR Code")
+    st.image(qr_bytes, caption="QR Code for Security to Scan")
+
 
     if st.button("Confirm Entry"):
         scan_time = datetime.now()
