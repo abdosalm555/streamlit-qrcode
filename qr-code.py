@@ -116,7 +116,7 @@ def page_generator(public_url):
                 "estimated_time": estimated_time,
                 "scan_time": None,
                 "expiry_time": expiry_time.isoformat(),
-                "id_uploaded": False
+                "id_uploaded": False,
                 "signature": signature,
 
             }
