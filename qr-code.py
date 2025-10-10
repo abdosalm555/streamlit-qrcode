@@ -5,8 +5,34 @@ import os
 from datetime import datetime, timedelta
 from io import BytesIO
 import base64
+from Crypto.PublicKey import RSA
+from Crypto.Signature import pkcs1_15
+from Crypto.Hash import SHA256
 
 DB_FILE = "scans.json"
+PRIVATE_KEY_FILE = "private.pem"
+PUBLIC_KEY_FILE = "public.pem"
+
+# ---------------------------
+# Key Generation (only first run)
+# ---------------------------
+def generate_rsa_keys():
+    if not os.path.exists(PRIVATE_KEY_FILE) or not os.path.exists(PUBLIC_KEY_FILE):
+        key = RSA.generate(2048)
+        private_key = key.export_key()
+        public_key = key.publickey().export_key()
+        with open(PRIVATE_KEY_FILE, "wb") as f:
+            f.write(private_key)
+        with open(PUBLIC_KEY_FILE, "wb") as f:
+            f.write(public_key)
+
+generate_rsa_keys()
+
+# Load keys
+with open(PRIVATE_KEY_FILE, "rb") as f:
+    private_key = RSA.import_key(f.read())
+with open(PUBLIC_KEY_FILE, "rb") as f:
+    public_key = RSA.import_key(f.read())
 
 # ---------------------------
 # Helpers
@@ -29,6 +55,21 @@ def generate_qr(data: str):
     buf = BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+def sign_data(data: str) -> str:
+    """Sign data using the private key."""
+    h = SHA256.new(data.encode('utf-8'))
+    signature = pkcs1_15.new(private_key).sign(h)
+    return base64.b64encode(signature).decode('utf-8')
+
+def verify_signature(data: str, signature: str) -> bool:
+    """Verify the QR data signature using the public key."""
+    try:
+        h = SHA256.new(data.encode('utf-8'))
+        pkcs1_15.new(public_key).verify(h, base64.b64decode(signature))
+        return True
+    except (ValueError, TypeError):
+        return False
 
 def get_end_of_day():
     now = datetime.now()
@@ -60,7 +101,9 @@ def page_generator(public_url):
     if st.button("Generate QR Link"):
         token = base64.urlsafe_b64encode(os.urandom(6)).decode("utf-8")
         scan_link = f"{public_url}/?page=Visitor&token={token}"
-
+        
+        signature = sign_data(payload)
+        scan_link = f"{public_url}/?page=Visitor&token={token}&sig={signature}"
         expiry_time = get_end_of_day()
 
         data = {
@@ -74,11 +117,15 @@ def page_generator(public_url):
                 "scan_time": None,
                 "expiry_time": expiry_time.isoformat(),
                 "id_uploaded": False
+                "signature": signature,
+
             }
         }
         save_data(data)
 
         st.success(f"✅ Share this link with the visitor:\n{scan_link}")
+        qr_bytes = generate_qr(scan_link)
+        st.image(qr_bytes, caption="Secure QR Code")
         st.info(f"QR can be used until **{expiry_time.strftime('%H:%M:%S')}** today")
 
 # ---------------------------
@@ -90,6 +137,8 @@ def page_visitor():
 
     query_params = st.query_params
     token = query_params.get("token", None)
+    signature = query_params.get("sig", None)
+
 
     if not token:
         st.error("❌ Invalid or missing QR token")
@@ -97,6 +146,16 @@ def page_visitor():
 
     data = load_data()
     visitor = data.get("visitor", {})
+    
+    expected_payload = f"{visitor.get('visitor_name','')}|{visitor.get('homeowner_name','')}|{visitor.get('block_number','')}|{visitor.get('estimated_time','')}|{token}"
+    if not verify_signature(expected_payload, signature):
+        st.error("🚫 QR code verification failed (tampered or invalid).")
+        return
+
+    expiry_time = datetime.fromisoformat(visitor["expiry_time"])
+    if datetime.now() > expiry_time:
+        st.error("⏱ QR Expired")
+        return
 
     if not visitor or visitor.get("token") != token:
         st.error("❌ QR Code not recognized")
@@ -155,10 +214,29 @@ def page_security():
 
     query_params = st.query_params
     token = query_params.get("token", None)
+    signature = query_params.get("sig", None)
+
 
     data = load_data()
     visitor = data.get("visitor")
 
+    payload = f"{visitor['visitor_name']}|{visitor['homeowner_name']}|{visitor['block_number']}|{visitor['estimated_time']}|{token}"
+    if not verify_signature(payload, signature):
+        st.error("🚫 QR code failed verification (possible forgery).")
+        return
+
+    expiry_time = datetime.fromisoformat(visitor["expiry_time"])
+    if datetime.now() > expiry_time:
+        st.error("⏱ QR Expired")
+        return
+
+    st.write(f"**Visitor Name:** {visitor['visitor_name']}")
+    st.write(f"**Homeowner:** {visitor['homeowner_name']}")
+    st.write(f"**Block:** {visitor['block_number']}")
+    st.write(f"**Purpose:** {visitor['purpose']}")
+    st.write(f"**Stay:** {visitor['estimated_time']}")
+
+    
     if not visitor or (token and visitor.get("token") != token):
         st.info("No active visitor records yet.")
         return
