@@ -101,6 +101,11 @@ def page_generator(public_url):
     if st.button("Generate QR Link"):
         token = base64.urlsafe_b64encode(os.urandom(6)).decode("utf-8")
         scan_link = f"{public_url}/?page=Visitor&token={token}"
+        payload = f"{visitor_name}|{homeowner_name}|{block_number}|{estimated_time}|{token}"
+
+    # 🔒 Sign the payload
+    signature = sign_data(payload)
+
         
         signature = sign_data(payload)
         scan_link = f"{public_url}/?page=Visitor&token={token}&sig={signature}"
