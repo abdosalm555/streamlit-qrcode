@@ -9,6 +9,9 @@ import base64
 from ultralytics import YOLO
 from PIL import Image
 import numpy as np
+import os
+os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
+from ultralytics import YOLO
 
 # ---------------------------
 # File paths
