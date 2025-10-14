@@ -1,6 +1,5 @@
 streamlit
 qrcode
-pycryptodome
 opencv-python-headless
 pyzbar
 streamlit-autorefresh
