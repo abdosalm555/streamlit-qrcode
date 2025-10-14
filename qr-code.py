@@ -1,17 +1,18 @@
+import os
+# ⚠️ Must come first — prevents OpenCV crash on Streamlit Cloud
+os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
+
 import streamlit as st
 import qrcode
 import json
-import os
 import hashlib
 from datetime import datetime, timedelta
 from io import BytesIO
 import base64
-from ultralytics import YOLO
 from PIL import Image
 import numpy as np
-import os
-os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 from ultralytics import YOLO
+
 
 # ---------------------------
 # File paths
@@ -194,7 +195,6 @@ def page_visitor():
         st.error("❌ QR Code not recognized")
         return
 
-    # Check if expired
     expiry_time = datetime.fromisoformat(visitor["expiry_time"])
     if datetime.now() > expiry_time:
         st.error("⏱ QR Expired (End of Day)")
@@ -209,7 +209,7 @@ def page_visitor():
             image = Image.open(uploaded_id)
             img_array = np.array(image)
 
-            # Run detection
+            # Run YOLO detection
             results = model.predict(source=img_array, conf=0.5, verbose=False)
             detected_labels = [results[0].names[int(cls)] for cls in results[0].boxes.cls]
 
@@ -309,7 +309,6 @@ def page_security():
 # Main App Navigation
 # ---------------------------
 def main(public_url):
-    # If not logged in → show login or registration
     if not st.session_state.get("logged_in", False):
         if st.session_state.get("show_login", True):
             page_login()
@@ -317,7 +316,6 @@ def main(public_url):
             page_register()
         return
 
-    # Logged in homeowner pages
     PAGES = {
         "Generator": lambda: page_generator(public_url),
         "Visitor": page_visitor,
@@ -328,10 +326,8 @@ def main(public_url):
     if default_page not in PAGES:
         default_page = "Generator"
 
-    page = st.sidebar.radio("Navigate", list(PAGES.keys()),
-                            index=list(PAGES.keys()).index(default_page))
+    page = st.sidebar.radio("Navigate", list(PAGES.keys()), index=list(PAGES.keys()).index(default_page))
 
-    # Logout button
     st.sidebar.divider()
     if st.sidebar.button("🚪 Logout"):
         st.session_state.clear()
