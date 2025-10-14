@@ -168,7 +168,7 @@ def page_visitor():
         st.error("❌ Invalid or missing QR token")
         return
 
-    data = load_json(DB_FILE)
+    data = load_data()
     visitor = data.get("visitor", {})
 
     if not visitor or visitor.get("token") != token:
@@ -188,23 +188,27 @@ def page_visitor():
             visitor["id_uploaded"] = True
             visitor["id_filename"] = uploaded_id.name  # Simulated save
             data["visitor"] = visitor
-            save_json(DB_FILE, data)
+            save_data(data)
             st.success("✅ ID uploaded successfully.")
         else:
             st.warning("⚠ Please upload your ID to proceed.")
             return  # Don't show QR until ID is uploaded
 
     st.subheader("QR Code for Gate Entry")
+    # 🔹 QR now points to Security page
     scan_link = f"{st.session_state.get('public_url', '')}/?page=Security&token={token}"
     qr_bytes = generate_qr(scan_link)
     st.image(qr_bytes, caption="QR Code for Security to Scan")
 
+    # Countdown only shows if security confirmed entry
     if visitor.get("scan_time"):
         st.subheader("⏳ Time Remaining")
+
         scanned_at = datetime.fromisoformat(visitor["scan_time"])
         estimated_duration = parse_estimated_time(visitor["estimated_time"])
         end_time = scanned_at + estimated_duration
-        remaining = end_time - datetime.now()
+        now = datetime.now()
+        remaining = end_time - now
 
         if remaining.total_seconds() > 0:
             st.success(f"Time Left: {str(remaining).split('.')[0]}")
