@@ -307,5 +307,5 @@ def main(public_url):
 # Run App
 # ---------------------------
 if __name__ == "__main__":
-    st.session_state.setdefault("public_url", "https://app-qrcode-yourapp.streamlit.app/")
+    st.session_state.setdefault("public_url", "https://app-qrcode-kbtgae6rj8r2qrdxprggcm.streamlit.app/")
     main(st.session_state["public_url"])
