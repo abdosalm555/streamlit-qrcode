@@ -3,3 +3,6 @@ qrcode
 opencv-python-headless
 pyzbar
 streamlit-autorefresh
+ultralytics
+pillow
+numpy
