@@ -1,37 +1,17 @@
-import os
-# ⚠️ Must come first — prevents OpenCV crash on Streamlit Cloud
-os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
-
 import streamlit as st
 import qrcode
 import json
+import os
 import hashlib
 from datetime import datetime, timedelta
 from io import BytesIO
 import base64
-from PIL import Image
-import numpy as np
-from ultralytics import YOLO
-
 
 # ---------------------------
 # File paths
 # ---------------------------
 USERS_FILE = "users.json"
 DB_FILE = "scans.json"
-MODEL_PATH = "best.pt"
-
-
-# ---------------------------
-# Load YOLO model (cached)
-# ---------------------------
-@st.cache_resource
-def load_model():
-    model = YOLO(MODEL_PATH)
-    return model
-
-
-model = load_model()
 
 
 # ---------------------------
@@ -78,7 +58,7 @@ def parse_estimated_time(time_str):
     elif "min" in time_str:
         num = int(time_str.split()[0])
         return timedelta(minutes=num)
-    return timedelta(minutes=30)  # fallback
+    return timedelta(minutes=30)
 
 
 # ---------------------------
@@ -138,7 +118,7 @@ def page_login():
 
 
 # ---------------------------
-# Page 1: QR Generator
+# Page 1: QR Generator (for logged-in homeowners)
 # ---------------------------
 def page_generator(public_url):
     st.title("🔑 QR Code Generator")
@@ -171,11 +151,11 @@ def page_generator(public_url):
         save_json(DB_FILE, data)
 
         st.success(f"✅ Share this link with the visitor:\n{scan_link}")
-        st.info(f"QR can be used until **{expiry_time.strftime('%H:%M:%S')}** today")
+        st.info(f"QR valid until **{expiry_time.strftime('%H:%M:%S')}** today")
 
 
 # ---------------------------
-# Page 2: Visitor
+# Page 2: Visitor (no login needed)
 # ---------------------------
 def page_visitor():
     from streamlit_autorefresh import st_autorefresh
@@ -195,43 +175,34 @@ def page_visitor():
         st.error("❌ QR Code not recognized")
         return
 
+    # Check if expired
     expiry_time = datetime.fromisoformat(visitor["expiry_time"])
     if datetime.now() > expiry_time:
         st.error("⏱ QR Expired (End of Day)")
         return
 
-    # --- AI ID Verification ---
+    # Step 1: Upload ID before showing QR
     if not visitor.get("id_uploaded"):
-        st.subheader("📷 Upload Identification (AI Verified)")
+        st.subheader("📸 Upload Your ID")
         uploaded_id = st.file_uploader("Upload your ID (Image Only)", type=["jpg", "jpeg", "png"])
-
         if uploaded_id:
-            image = Image.open(uploaded_id)
-            img_array = np.array(image)
-
-            # Run YOLO detection
-            results = model.predict(source=img_array, conf=0.5, verbose=False)
-            detected_labels = [results[0].names[int(cls)] for cls in results[0].boxes.cls]
-
-            if any("id" in label.lower() for label in detected_labels):
-                visitor["id_uploaded"] = True
-                visitor["id_filename"] = uploaded_id.name
-                data["visitor"] = visitor
-                save_json(DB_FILE, data)
-                st.success("✅ Valid ID detected and uploaded successfully.")
-            else:
-                st.error("❌ No valid ID detected. Please upload a clear photo of your ID.")
-                return
+            visitor["id_uploaded"] = True
+            visitor["id_filename"] = uploaded_id.name
+            data["visitor"] = visitor
+            save_json(DB_FILE, data)
+            st.success("✅ ID uploaded successfully.")
+            st.rerun()
         else:
             st.warning("⚠ Please upload your ID to proceed.")
             return
 
-    # --- Show QR for Security ---
-    st.subheader("✅ QR Code for Gate Entry")
+    # Step 2: Show QR for Security
+    st.subheader("QR Code for Gate Entry")
     scan_link = f"{st.session_state.get('public_url', '')}/?page=Security&token={token}"
     qr_bytes = generate_qr(scan_link)
     st.image(qr_bytes, caption="QR Code for Security to Scan")
 
+    # Step 3: Countdown
     if visitor.get("scan_time"):
         st.subheader("⏳ Time Remaining")
         scanned_at = datetime.fromisoformat(visitor["scan_time"])
@@ -243,7 +214,6 @@ def page_visitor():
             st.success(f"Time Left: {str(remaining).split('.')[0]}")
         else:
             st.error("⏱ Visitor's estimated time has expired.")
-
         st_autorefresh(interval=1000, key="visitor_refresh")
     else:
         st.info("⌛ Waiting for Security to confirm your entry.")
@@ -288,27 +258,29 @@ def page_security():
     else:
         scanned_at = datetime.fromisoformat(visitor["scan_time"])
         st.write(f"**Scanned At:** {scanned_at.strftime('%H:%M:%S')}")
-
-        estimated_duration = parse_estimated_time(visitor['estimated_time'])
+        estimated_duration = parse_estimated_time(visitor["estimated_time"])
         end_time = scanned_at + estimated_duration
         remaining = end_time - datetime.now()
-
         if remaining.total_seconds() > 0:
             st.success(f"⏳ Time Left: {str(remaining).split('.')[0]}")
         else:
             st.error("⏱ Visitor's estimated time has expired.")
-
         st_autorefresh(interval=1000, key="security_refresh")
-
-    eod_remaining = expiry_time - datetime.now()
-    st.caption(f"🕛 QR valid until: {expiry_time.strftime('%H:%M:%S')} (end of day)")
-    st.caption(f"📆 Time left today: {str(eod_remaining).split('.')[0]}")
 
 
 # ---------------------------
 # Main App Navigation
 # ---------------------------
 def main(public_url):
+    # Visitors can directly access via ?page=Visitor
+    if st.query_params.get("page") == "Visitor":
+        page_visitor()
+        return
+    if st.query_params.get("page") == "Security":
+        page_security()
+        return
+
+    # Homeowners must log in
     if not st.session_state.get("logged_in", False):
         if st.session_state.get("show_login", True):
             page_login()
@@ -316,18 +288,12 @@ def main(public_url):
             page_register()
         return
 
-    PAGES = {
-        "Generator": lambda: page_generator(public_url),
-        "Visitor": page_visitor,
-        "Security": page_security,
-    }
+    # Logged-in homeowner pages
+    PAGES = {"Generator": lambda: page_generator(public_url)}
 
-    default_page = st.query_params.get("page", "Generator")
-    if default_page not in PAGES:
-        default_page = "Generator"
+    page = st.sidebar.radio("Navigate", list(PAGES.keys()), index=0)
 
-    page = st.sidebar.radio("Navigate", list(PAGES.keys()), index=list(PAGES.keys()).index(default_page))
-
+    # Logout
     st.sidebar.divider()
     if st.sidebar.button("🚪 Logout"):
         st.session_state.clear()
