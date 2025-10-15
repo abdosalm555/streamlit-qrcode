@@ -6,12 +6,17 @@ import hashlib
 from datetime import datetime, timedelta
 from io import BytesIO
 import base64
+from ultralytics import YOLO
+import tempfile
+import cv2
+import numpy as np
 
 # ---------------------------
 # File paths
 # ---------------------------
 USERS_FILE = "users.json"
 DB_FILE = "scans.json"
+MODEL_PATH = "best.pt"  # <-- Your AI model file
 
 
 # ---------------------------
@@ -155,7 +160,7 @@ def page_generator(public_url):
 
 
 # ---------------------------
-# Page 2: Visitor (no login needed)
+# Page 2: Visitor (with AI ID verification)
 # ---------------------------
 def page_visitor():
     from streamlit_autorefresh import st_autorefresh
@@ -175,23 +180,39 @@ def page_visitor():
         st.error("❌ QR Code not recognized")
         return
 
-    # Check if expired
     expiry_time = datetime.fromisoformat(visitor["expiry_time"])
     if datetime.now() > expiry_time:
         st.error("⏱ QR Expired (End of Day)")
         return
 
-    # Step 1: Upload ID before showing QR
+    # Step 1: Upload and validate ID with AI
     if not visitor.get("id_uploaded"):
         st.subheader("📸 Upload Your ID")
         uploaded_id = st.file_uploader("Upload your ID (Image Only)", type=["jpg", "jpeg", "png"])
+
         if uploaded_id:
-            visitor["id_uploaded"] = True
-            visitor["id_filename"] = uploaded_id.name
-            data["visitor"] = visitor
-            save_json(DB_FILE, data)
-            st.success("✅ ID uploaded successfully.")
-            st.rerun()
+            # Save temp image
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+                tmp.write(uploaded_id.getvalue())
+                tmp_path = tmp.name
+
+            # Load model and run inference
+            model = YOLO(MODEL_PATH)
+            results = model.predict(tmp_path, conf=0.5, verbose=False)
+            detected_labels = [model.names[int(box.cls)] for box in results[0].boxes]
+
+            if "ID" in detected_labels or "id" in detected_labels:
+                visitor["id_uploaded"] = True
+                visitor["id_filename"] = uploaded_id.name
+                data["visitor"] = visitor
+                save_json(DB_FILE, data)
+                st.success("✅ Valid ID detected and approved.")
+                os.remove(tmp_path)
+                st.rerun()
+            else:
+                st.error("❌ Not a valid ID card. Please try again with a clear image.")
+                os.remove(tmp_path)
+                return
         else:
             st.warning("⚠ Please upload your ID to proceed.")
             return
@@ -272,7 +293,6 @@ def page_security():
 # Main App Navigation
 # ---------------------------
 def main(public_url):
-    # Visitors can directly access via ?page=Visitor
     if st.query_params.get("page") == "Visitor":
         page_visitor()
         return
@@ -280,7 +300,6 @@ def main(public_url):
         page_security()
         return
 
-    # Homeowners must log in
     if not st.session_state.get("logged_in", False):
         if st.session_state.get("show_login", True):
             page_login()
@@ -288,12 +307,10 @@ def main(public_url):
             page_register()
         return
 
-    # Logged-in homeowner pages
     PAGES = {"Generator": lambda: page_generator(public_url)}
 
     page = st.sidebar.radio("Navigate", list(PAGES.keys()), index=0)
 
-    # Logout
     st.sidebar.divider()
     if st.sidebar.button("🚪 Logout"):
         st.session_state.clear()
