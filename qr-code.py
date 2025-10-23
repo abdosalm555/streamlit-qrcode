@@ -10,7 +10,6 @@ from ultralytics import YOLO
 import tempfile
 import cv2
 import numpy as np
-import re  # <-- added for improved time parsing
 
 # ---------------------------
 # File paths
@@ -55,25 +54,14 @@ def get_end_of_day():
     return datetime(now.year, now.month, now.day, 23, 59, 59)
 
 
-# ✅ Improved function to handle flexible time input formats
 def parse_estimated_time(time_str):
-    time_str = time_str.lower().strip()
-
-    # Handle hours (hour, hr, hrs, h)
-    if any(x in time_str for x in ["hour", "hr", "hrs", "h"]):
-        match = re.search(r"(\d+)", time_str)
-        if match:
-            hours = int(match.group(1))
-            return timedelta(hours=hours)
-
-    # Handle minutes (minute, min, mins, m)
-    if any(x in time_str for x in ["minute", "min", "mins", "m"]):
-        match = re.search(r"(\d+)", time_str)
-        if match:
-            minutes = int(match.group(1))
-            return timedelta(minutes=minutes)
-
-    # Default if unrecognized
+    time_str = time_str.lower()
+    if "hour" in time_str:
+        num = int(time_str.split()[0])
+        return timedelta(hours=num)
+    elif "min" in time_str:
+        num = int(time_str.split()[0])
+        return timedelta(minutes=num)
     return timedelta(minutes=30)
 
 
