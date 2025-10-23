@@ -15,9 +15,8 @@ import numpy as np
 # File paths
 # ---------------------------
 USERS_FILE = "users.json"
-PENDING_FILE = "pending_users.json"
 DB_FILE = "scans.json"
-MODEL_PATH = "best.pt"  # <-- Your AI model file
+MODEL_PATH = "best.pt"  # AI model file for ID detection
 
 
 # ---------------------------
@@ -55,23 +54,32 @@ def get_end_of_day():
 
 
 def parse_estimated_time(time_str):
-    time_str = time_str.lower()
-    if "hour" in time_str:
-        num = int(time_str.split()[0])
+    """Parse flexible time strings like '1 hour', '1 hr', '1h', '30 mins', etc."""
+    time_str = time_str.lower().strip()
+    num = 0
+    if any(x in time_str for x in ["hour", "hr", "h"]):
+        for part in time_str.split():
+            if part.replace('.', '', 1).isdigit():
+                num = float(part)
+                break
         return timedelta(hours=num)
-    elif "min" in time_str:
-        num = int(time_str.split()[0])
+    elif any(x in time_str for x in ["min", "m"]):
+        for part in time_str.split():
+            if part.replace('.', '', 1).isdigit():
+                num = float(part)
+                break
         return timedelta(minutes=num)
-    return timedelta(minutes=30)
+    else:
+        # Default 30 minutes if parsing fails
+        return timedelta(minutes=30)
 
 
 # ---------------------------
-# Registration Page
+# Authentication Pages
 # ---------------------------
 def page_register():
     st.title("🏠 Homeowner Registration")
 
-    pending = load_json(PENDING_FILE)
     users = load_json(USERS_FILE)
 
     email = st.text_input("Email (used as username)")
@@ -79,31 +87,25 @@ def page_register():
     password = st.text_input("Password", type="password")
     confirm = st.text_input("Confirm Password", type="password")
 
-    if st.button("Submit Registration Request"):
+    if st.button("Register"):
         if not email or not password or not phone:
             st.error("Please fill all fields.")
         elif password != confirm:
             st.error("Passwords do not match.")
         elif email in users:
-            st.warning("This email is already approved.")
-        elif email in pending:
-            st.warning("This email is already awaiting admin approval.")
+            st.warning("This email is already registered.")
         else:
-            pending[email] = {
+            users[email] = {
                 "phone": phone,
                 "password": hash_password(password),
-                "submitted_at": datetime.now().isoformat(),
+                "approved": False  # Pending admin approval
             }
-            save_json(PENDING_FILE, pending)
-            st.success("✅ Registration request sent for admin approval.")
-            st.info("Please wait until your account is approved.")
+            save_json(USERS_FILE, users)
+            st.success("✅ Registration submitted! Await admin approval.")
             st.session_state["show_login"] = True
             st.rerun()
 
 
-# ---------------------------
-# Login Page
-# ---------------------------
 def page_login():
     st.title("🔐 Homeowner Login")
 
@@ -114,7 +116,9 @@ def page_login():
 
     if st.button("Login"):
         if email not in users:
-            st.error("Email not registered or not yet approved.")
+            st.error("Email not registered.")
+        elif not users[email].get("approved", False):
+            st.warning("⏳ Awaiting admin approval.")
         elif users[email]["password"] != hash_password(password):
             st.error("Incorrect password.")
         else:
@@ -130,7 +134,42 @@ def page_login():
 
 
 # ---------------------------
-# QR Generator Page
+# Page: Admin Dashboard
+# ---------------------------
+def page_admin():
+    st.title("🧑‍💼 Admin Dashboard")
+
+    users = load_json(USERS_FILE)
+    if not users:
+        st.info("No users registered yet.")
+        return
+
+    pending = {k: v for k, v in users.items() if not v.get("approved", False)}
+    approved = {k: v for k, v in users.items() if v.get("approved", False)}
+
+    st.subheader("Pending Approval Requests")
+    if pending:
+        for email, data in pending.items():
+            st.write(f"**Email:** {email} | **Phone:** {data['phone']}")
+            if st.button(f"Approve {email}"):
+                users[email]["approved"] = True
+                save_json(USERS_FILE, users)
+                st.success(f"✅ {email} approved!")
+                st.rerun()
+    else:
+        st.info("No pending users.")
+
+    st.subheader("✅ Approved Users")
+    if approved:
+        import pandas as pd
+        table = [{"Email": k, "Phone": v["phone"]} for k, v in approved.items()]
+        st.table(pd.DataFrame(table))
+    else:
+        st.info("No approved users yet.")
+
+
+# ---------------------------
+# Page: QR Code Generator
 # ---------------------------
 def page_generator(public_url):
     st.title("🔑 QR Code Generator")
@@ -139,7 +178,7 @@ def page_generator(public_url):
     homeowner_name = st.text_input("Name of Home Owner")
     block_number = st.text_input("Block Number")
     purpose = st.text_area("Purpose of Visit")
-    estimated_time = st.text_input("Estimated Time of Stay (e.g., 1 hour, 30 mins)")
+    estimated_time = st.text_input("Estimated Time (e.g., 1 hour, 30 mins)")
 
     if st.button("Generate QR Link"):
         token = base64.urlsafe_b64encode(os.urandom(6)).decode("utf-8")
@@ -157,7 +196,7 @@ def page_generator(public_url):
                 "estimated_time": estimated_time,
                 "scan_time": None,
                 "expiry_time": expiry_time.isoformat(),
-                "id_uploaded": False,
+                "id_uploaded": False
             }
         }
         save_json(DB_FILE, data)
@@ -167,7 +206,7 @@ def page_generator(public_url):
 
 
 # ---------------------------
-# Visitor Page
+# Page: Visitor
 # ---------------------------
 def page_visitor():
     from streamlit_autorefresh import st_autorefresh
@@ -192,9 +231,10 @@ def page_visitor():
         st.error("⏱ QR Expired (End of Day)")
         return
 
+    # Step 1: Upload and validate ID
     if not visitor.get("id_uploaded"):
         st.subheader("📸 Upload Your ID")
-        uploaded_id = st.file_uploader("Upload your ID (Image Only)", type=["jpg", "jpeg", "png"])
+        uploaded_id = st.file_uploader("Upload your ID", type=["jpg", "jpeg", "png"])
 
         if uploaded_id:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
@@ -205,7 +245,7 @@ def page_visitor():
             results = model.predict(tmp_path, conf=0.5, verbose=False)
             detected_labels = [model.names[int(box.cls)] for box in results[0].boxes]
 
-            if "ID" in detected_labels or "id" in detected_labels:
+            if any(lbl.lower() == "id" for lbl in detected_labels):
                 visitor["id_uploaded"] = True
                 visitor["id_filename"] = uploaded_id.name
                 data["visitor"] = visitor
@@ -214,24 +254,27 @@ def page_visitor():
                 os.remove(tmp_path)
                 st.rerun()
             else:
-                st.error("❌ Not a valid ID card. Please try again with a clear image.")
+                st.error("❌ Not a valid ID card. Please upload a clear image.")
                 os.remove(tmp_path)
                 return
         else:
             st.warning("⚠ Please upload your ID to proceed.")
             return
 
+    # Step 2: Show QR for Security
     st.subheader("QR Code for Gate Entry")
     scan_link = f"{st.session_state.get('public_url', '')}/?page=Security&token={token}"
     qr_bytes = generate_qr(scan_link)
     st.image(qr_bytes, caption="QR Code for Security to Scan")
 
+    # Step 3: Countdown
     if visitor.get("scan_time"):
         st.subheader("⏳ Time Remaining")
         scanned_at = datetime.fromisoformat(visitor["scan_time"])
         estimated_duration = parse_estimated_time(visitor["estimated_time"])
         end_time = scanned_at + estimated_duration
         remaining = end_time - datetime.now()
+
         if remaining.total_seconds() > 0:
             st.success(f"Time Left: {str(remaining).split('.')[0]}")
         else:
@@ -242,7 +285,7 @@ def page_visitor():
 
 
 # ---------------------------
-# Security Page
+# Page: Security
 # ---------------------------
 def page_security():
     from streamlit_autorefresh import st_autorefresh
@@ -291,52 +334,16 @@ def page_security():
 
 
 # ---------------------------
-# Admin Page
-# ---------------------------
-def page_admin():
-    st.title("🧑‍💼 Admin Dashboard - Approve New Accounts")
-
-    pending = load_json(PENDING_FILE)
-    users = load_json(USERS_FILE)
-
-    if not pending:
-        st.info("No pending registration requests.")
-        return
-
-    for email, info in pending.items():
-        st.write(f"**Email:** {email}")
-        st.write(f"**Phone:** {info['phone']}")
-        st.write(f"**Submitted:** {info['submitted_at']}")
-        cols = st.columns(2)
-        with cols[0]:
-            if st.button(f"✅ Approve {email}"):
-                users[email] = {"phone": info["phone"], "password": info["password"]}
-                save_json(USERS_FILE, users)
-                del pending[email]
-                save_json(PENDING_FILE, pending)
-                st.success(f"Approved {email}")
-                st.rerun()
-        with cols[1]:
-            if st.button(f"❌ Reject {email}"):
-                del pending[email]
-                save_json(PENDING_FILE, pending)
-                st.warning(f"Rejected {email}")
-                st.rerun()
-
-
-# ---------------------------
-# Main App
+# Main App Navigation
 # ---------------------------
 def main(public_url):
     page_param = st.query_params.get("page")
+
     if page_param == "Visitor":
         page_visitor()
         return
-    if page_param == "Security":
+    elif page_param == "Security":
         page_security()
-        return
-    if page_param == "Admin":
-        page_admin()
         return
 
     if not st.session_state.get("logged_in", False):
@@ -346,10 +353,14 @@ def main(public_url):
             page_register()
         return
 
-    PAGES = {"Generator": lambda: page_generator(public_url)}
+    PAGES = {
+        "Generator": lambda: page_generator(public_url),
+        "Admin": page_admin,
+    }
 
     page = st.sidebar.radio("Navigate", list(PAGES.keys()), index=0)
     st.sidebar.divider()
+
     if st.sidebar.button("🚪 Logout"):
         st.session_state.clear()
         st.success("Logged out successfully.")
@@ -362,7 +373,5 @@ def main(public_url):
 # Run App
 # ---------------------------
 if __name__ == "__main__":
-    st.session_state.setdefault(
-        "public_url", "https://app-qrcode-kbtgae6rj8r2qrdxprggcm.streamlit.app/"
-    )
+    st.session_state.setdefault("public_url", "https://app-qrcode-kbtgae6rj8r2qrdxprggcm.streamlit.app/")
     main(st.session_state["public_url"])
