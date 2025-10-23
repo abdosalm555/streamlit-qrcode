@@ -55,13 +55,24 @@ def get_end_of_day():
 
 
 def parse_estimated_time(time_str):
-    time_str = time_str.lower()
-    if "hour" in time_str:
-        num = int(time_str.split()[0])
-        return timedelta(hours=num)
-    elif "min" in time_str:
-        num = int(time_str.split()[0])
-        return timedelta(minutes=num)
+    """
+    Smart time parser – supports variations like:
+    1h, 1 hr, 1hour, 1 hour, 30min, 30 mins, 0.5h, etc.
+    """
+    s = time_str.lower().strip()
+    try:
+        if "hour" in s or "hr" in s or "h" in s:
+            num = float(s.split()[0].replace("h", ""))
+            return timedelta(hours=num)
+        if "min" in s or "m" in s:
+            num = float(s.split()[0].replace("m", ""))
+            return timedelta(minutes=num)
+        if ":" in s:  # format like 1:30
+            h, m = s.split(":")
+            return timedelta(hours=int(h), minutes=int(m))
+    except Exception:
+        pass
+    # default fallback
     return timedelta(minutes=30)
 
 
@@ -303,24 +314,34 @@ def page_admin():
         st.info("No pending registration requests.")
         return
 
-    for email, info in pending.items():
-        st.write(f"**Email:** {email}")
+    import pandas as pd
+
+    df = pd.DataFrame([
+        {"Email": email, "Phone": info["phone"], "Submitted": info["submitted_at"]}
+        for email, info in pending.items()
+    ])
+
+    st.dataframe(df, use_container_width=True)
+
+    selected_email = st.selectbox("Select an email to review:", list(pending.keys()))
+    if selected_email:
+        info = pending[selected_email]
         st.write(f"**Phone:** {info['phone']}")
         st.write(f"**Submitted:** {info['submitted_at']}")
-        cols = st.columns(2)
-        with cols[0]:
-            if st.button(f"✅ Approve {email}"):
-                users[email] = {"phone": info["phone"], "password": info["password"]}
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Approve"):
+                users[selected_email] = {"phone": info["phone"], "password": info["password"]}
                 save_json(USERS_FILE, users)
-                del pending[email]
+                del pending[selected_email]
                 save_json(PENDING_FILE, pending)
-                st.success(f"Approved {email}")
+                st.success(f"Approved {selected_email}")
                 st.rerun()
-        with cols[1]:
-            if st.button(f"❌ Reject {email}"):
-                del pending[email]
+        with col2:
+            if st.button("❌ Reject"):
+                del pending[selected_email]
                 save_json(PENDING_FILE, pending)
-                st.warning(f"Rejected {email}")
+                st.warning(f"Rejected {selected_email}")
                 st.rerun()
 
 
@@ -328,14 +349,22 @@ def page_admin():
 # Main App
 # ---------------------------
 def main(public_url):
-    page_param = st.query_params.get("page")
-    if page_param == "Visitor":
+    raw_page = st.query_params.get("page")
+    page_param = None
+    if isinstance(raw_page, list) and raw_page:
+        page_param = raw_page[0]
+    elif isinstance(raw_page, str):
+        page_param = raw_page
+
+    page_clean = page_param.lower() if page_param else None
+
+    if page_clean == "visitor":
         page_visitor()
         return
-    if page_param == "Security":
+    if page_clean == "security":
         page_security()
         return
-    if page_param == "Admin":
+    if page_clean == "admin":
         page_admin()
         return
 
