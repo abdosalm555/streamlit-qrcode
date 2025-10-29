@@ -1,4 +1,3 @@
-
 import streamlit as st
 import qrcode
 import json
@@ -11,6 +10,7 @@ from ultralytics import YOLO
 import tempfile
 import cv2
 import numpy as np
+import pandas as pd
 
 # ---------------------------
 # File paths
@@ -56,10 +56,7 @@ def get_end_of_day():
 
 
 def parse_estimated_time(time_str):
-    """
-    Smart time parser – supports variations like:
-    1h, 1 hr, 1hour, 1 hour, 30min, 30 mins, 0.5h, etc.
-    """
+    """Smart time parser – handles 1h, 1 hr, 1 hour, 30 mins, etc."""
     s = time_str.lower().strip()
     try:
         if "hour" in s or "hr" in s or "h" in s:
@@ -68,12 +65,11 @@ def parse_estimated_time(time_str):
         if "min" in s or "m" in s:
             num = float(s.split()[0].replace("m", ""))
             return timedelta(minutes=num)
-        if ":" in s:  # format like 1:30
+        if ":" in s:  # 1:30 -> 1 hour 30 mins
             h, m = s.split(":")
             return timedelta(hours=int(h), minutes=int(m))
     except Exception:
         pass
-    # default fallback
     return timedelta(minutes=30)
 
 
@@ -132,6 +128,7 @@ def page_login():
         else:
             st.session_state["logged_in"] = True
             st.session_state["email"] = email
+            st.session_state["phone"] = users[email]["phone"]
             st.success("✅ Login successful!")
             st.rerun()
 
@@ -147,8 +144,10 @@ def page_login():
 def page_generator(public_url):
     st.title("🔑 QR Code Generator")
 
+    homeowner_email = st.session_state.get("email", "Unknown")
+    st.info(f"👤 Logged in as: **{homeowner_email}**")
+
     visitor_name = st.text_input("Visitor Name")
-    homeowner_name = st.text_input("Name of Home Owner")
     block_number = st.text_input("Block Number")
     purpose = st.text_area("Purpose of Visit")
     estimated_time = st.text_input("Estimated Time of Stay (e.g., 1 hour, 30 mins)")
@@ -163,7 +162,7 @@ def page_generator(public_url):
             "visitor": {
                 "token": token,
                 "visitor_name": visitor_name,
-                "homeowner_name": homeowner_name,
+                "homeowner_name": homeowner_email,
                 "block_number": block_number,
                 "purpose": purpose,
                 "estimated_time": estimated_time,
@@ -314,8 +313,6 @@ def page_admin():
     if not pending:
         st.info("No pending registration requests.")
         return
-
-    import pandas as pd
 
     df = pd.DataFrame([
         {"Email": email, "Phone": info["phone"], "Submitted": info["submitted_at"]}
