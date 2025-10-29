@@ -10,194 +10,415 @@ from ultralytics import YOLO
 import tempfile
 import cv2
 import numpy as np
+import pandas as pd
 
-# -------------------- FILES --------------------
-DATA_FILE = "data.json"
+# ---------------------------
+# File paths
+# ---------------------------
+USERS_FILE = "users.json"
 PENDING_FILE = "pending_users.json"
+DB_FILE = "scans.json"
+SECURITY_FILE = "security_users.json"
+MODEL_PATH = "best.pt"  # <-- Your AI model file
 
-# Load YOLO model for ID verification
-model = YOLO("best.pt")
 
-# -------------------- FUNCTIONS --------------------
-def load_data(file):
-    if not os.path.exists(file):
-        return {}
-    with open(file, "r") as f:
-        return json.load(f)
+# ---------------------------
+# Helpers
+# ---------------------------
+def load_json(file_path):
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            return json.load(f)
+    return {}
 
-def save_data(data, file):
-    with open(file, "w") as f:
+
+def save_json(file_path, data):
+    with open(file_path, "w") as f:
         json.dump(data, f, indent=4)
 
-def hash_password(password):
+
+def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
-def verify_id(image_file, confidence_threshold=0.7):
-    """Verify if uploaded ID image is valid using YOLO model."""
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-            tmp.write(image_file.read())
-            tmp_path = tmp.name
 
-        results = model.predict(tmp_path, conf=0.25, verbose=False)
-
-        # Check if any detection has confidence >= threshold
-        for result in results:
-            for box in result.boxes:
-                if box.conf[0] >= confidence_threshold:
-                    return True
-        return False
-    except Exception as e:
-        print("Error verifying ID:", e)
-        return False
-
-def generate_qr(data):
-    qr = qrcode.QRCode(box_size=10, border=2)
+def generate_qr(data: str):
+    qr = qrcode.QRCode(version=1, box_size=8, border=4)
     qr.add_data(data)
     qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
+    img = qr.make_image(fill="black", back_color="white")
     buf = BytesIO()
-    img.save(buf)
+    img.save(buf, format="PNG")
     return buf.getvalue()
 
-def parse_time_input(time_str):
-    time_str = time_str.lower().strip()
-    if "hour" in time_str or "hr" in time_str or "h" in time_str:
-        num = [int(s) for s in time_str.split() if s.isdigit()]
-        return timedelta(hours=num[0] if num else 1)
-    elif "min" in time_str:
-        num = [int(s) for s in time_str.split() if s.isdigit()]
-        return timedelta(minutes=num[0] if num else 30)
-    else:
-        return timedelta(minutes=30)
 
-# -------------------- PAGES --------------------
+def get_end_of_day():
+    now = datetime.now()
+    return datetime(now.year, now.month, now.day, 23, 59, 59)
+
+
+def parse_estimated_time(time_str):
+    s = time_str.lower().strip()
+    try:
+        if "hour" in s or "hr" in s or "h" in s:
+            num = float(s.split()[0].replace("h", ""))
+            return timedelta(hours=num)
+        if "min" in s or "m" in s:
+            num = float(s.split()[0].replace("m", ""))
+            return timedelta(minutes=num)
+        if ":" in s:
+            h, m = s.split(":")
+            return timedelta(hours=int(h), minutes=int(m))
+    except Exception:
+        pass
+    return timedelta(minutes=30)
+
+
+# ---------------------------
+# Registration Page
+# ---------------------------
 def page_register():
-    st.title("🏠 Register as Homeowner")
-    username = st.text_input("Username")
+    st.title("🏠 Homeowner Registration")
+
+    pending = load_json(PENDING_FILE)
+    users = load_json(USERS_FILE)
+
+    email = st.text_input("Email (used as username)")
+    phone = st.text_input("Phone Number")
+    password = st.text_input("Password", type="password")
+    confirm = st.text_input("Confirm Password", type="password")
+
+    if st.button("Submit Registration Request"):
+        if not email or not password or not phone:
+            st.error("Please fill all fields.")
+        elif password != confirm:
+            st.error("Passwords do not match.")
+        elif email in users:
+            st.warning("This email is already approved.")
+        elif email in pending:
+            st.warning("This email is already awaiting admin approval.")
+        else:
+            pending[email] = {
+                "phone": phone,
+                "password": hash_password(password),
+                "submitted_at": datetime.now().isoformat(),
+            }
+            save_json(PENDING_FILE, pending)
+            st.success("✅ Registration request sent for admin approval.")
+            st.info("Please wait until your account is approved.")
+            st.session_state["show_login"] = True
+            st.rerun()
+
+
+# ---------------------------
+# Login Page
+# ---------------------------
+def page_login():
+    st.title("🔐 Homeowner Login")
+
+    users = load_json(USERS_FILE)
+
+    email = st.text_input("Email")
     password = st.text_input("Password", type="password")
 
-    if st.button("Register"):
-        if username and password:
-            pending = load_data(PENDING_FILE)
-            if username in pending:
-                st.warning("This username is already pending approval.")
-            else:
-                pending[username] = hash_password(password)
-                save_data(pending, PENDING_FILE)
-                st.success("✅ Registration request sent! Wait for admin approval.")
+    if st.button("Login"):
+        if email not in users:
+            st.error("Email not registered or not yet approved.")
+        elif users[email]["password"] != hash_password(password):
+            st.error("Incorrect password.")
         else:
-            st.error("Please fill all fields.")
+            st.session_state["logged_in"] = True
+            st.session_state["email"] = email
+            st.session_state["phone"] = users[email]["phone"]
+            st.success("✅ Login successful!")
+            st.rerun()
 
+    st.info("Don't have an account?")
+    if st.button("Register Here"):
+        st.session_state["show_login"] = False
+        st.rerun()
+
+
+# ---------------------------
+# Security Login Page
+# ---------------------------
+def security_login():
+    st.title("🛡 Security Login")
+    security_users = load_json(SECURITY_FILE)
+
+    username = st.text_input("Security Username")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login as Security"):
+        if username not in security_users:
+            st.error("❌ Unauthorized user.")
+        elif security_users[username] != hash_password(password):
+            st.error("❌ Incorrect password.")
+        else:
+            st.session_state["security_logged_in"] = True
+            st.session_state["security_name"] = username
+            st.success("✅ Logged in as Security Officer.")
+            st.rerun()
+
+
+# ---------------------------
+# QR Generator Page
+# ---------------------------
+def page_generator(public_url):
+    st.title("🔑 QR Code Generator")
+
+    homeowner_email = st.session_state.get("email", "Unknown")
+    st.info(f"👤 Logged in as: **{homeowner_email}**")
+
+    visitor_name = st.text_input("Visitor Name")
+    block_number = st.text_input("Block Number")
+    purpose = st.text_area("Purpose of Visit")
+    estimated_time = st.text_input("Estimated Time of Stay (e.g., 1 hour, 30 mins)")
+
+    if st.button("Generate QR Link"):
+        token = base64.urlsafe_b64encode(os.urandom(6)).decode("utf-8")
+        scan_link = f"{public_url}/?page=Visitor&token={token}"
+
+        expiry_time = get_end_of_day()
+
+        data = {
+            "visitor": {
+                "token": token,
+                "visitor_name": visitor_name,
+                "homeowner_name": homeowner_email,
+                "block_number": block_number,
+                "purpose": purpose,
+                "estimated_time": estimated_time,
+                "scan_time": None,
+                "expiry_time": expiry_time.isoformat(),
+                "id_uploaded": False,
+            }
+        }
+        save_json(DB_FILE, data)
+
+        st.success(f"✅ Share this link with the visitor:\n{scan_link}")
+        st.info(f"QR valid until **{expiry_time.strftime('%H:%M:%S')}** today")
+
+
+# ---------------------------
+# Visitor Page
+# ---------------------------
+def page_visitor():
+    from streamlit_autorefresh import st_autorefresh
+    st.title("🙋 Visitor Check-In")
+
+    query_params = st.query_params
+    token = query_params.get("token", None)
+
+    if not token:
+        st.error("❌ Invalid or missing QR token")
+        return
+
+    data = load_json(DB_FILE)
+    visitor = data.get("visitor", {})
+
+    if not visitor or visitor.get("token") != token:
+        st.error("❌ QR Code not recognized")
+        return
+
+    expiry_time = datetime.fromisoformat(visitor["expiry_time"])
+    if datetime.now() > expiry_time:
+        st.error("⏱ QR Expired (End of Day)")
+        return
+
+    if not visitor.get("id_uploaded"):
+        st.subheader("📸 Upload Your ID")
+        uploaded_id = st.file_uploader("Upload your ID (Image Only)", type=["jpg", "jpeg", "png"])
+
+        if uploaded_id:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+                tmp.write(uploaded_id.getvalue())
+                tmp_path = tmp.name
+
+            model = YOLO(MODEL_PATH)
+            results = model.predict(tmp_path, conf=0.5, verbose=False)
+            detected_labels = [model.names[int(box.cls)] for box in results[0].boxes]
+
+            if "ID" in detected_labels or "id" in detected_labels:
+                visitor["id_uploaded"] = True
+                visitor["id_filename"] = uploaded_id.name
+                data["visitor"] = visitor
+                save_json(DB_FILE, data)
+                st.success("✅ Valid ID detected and approved.")
+                os.remove(tmp_path)
+                st.rerun()
+            else:
+                st.error("❌ Not a valid ID card. Please try again with a clear image.")
+                os.remove(tmp_path)
+                return
+        else:
+            st.warning("⚠ Please upload your ID to proceed.")
+            return
+
+    st.subheader("QR Code for Gate Entry")
+    scan_link = f"{st.session_state.get('public_url', '')}/?page=Security&token={token}"
+    qr_bytes = generate_qr(scan_link)
+    st.image(qr_bytes, caption="QR Code for Security to Scan")
+
+    if visitor.get("scan_time"):
+        st.subheader("⏳ Time Remaining")
+        scanned_at = datetime.fromisoformat(visitor["scan_time"])
+        estimated_duration = parse_estimated_time(visitor["estimated_time"])
+        end_time = scanned_at + estimated_duration
+        remaining = end_time - datetime.now()
+        if remaining.total_seconds() > 0:
+            st.success(f"Time Left: {str(remaining).split('.')[0]}")
+        else:
+            st.error("⏱ Visitor's estimated time has expired.")
+        st_autorefresh(interval=1000, key="visitor_refresh")
+    else:
+        st.info("⌛ Waiting for Security to confirm your entry.")
+
+
+# ---------------------------
+# Security Page (Now Restricted)
+# ---------------------------
+def page_security():
+    from streamlit_autorefresh import st_autorefresh
+    st.title("🛡 Security Dashboard")
+
+    # Require login
+    if not st.session_state.get("security_logged_in", False):
+        security_login()
+        return
+
+    st.info(f"👮 Logged in as: **{st.session_state['security_name']}**")
+
+    query_params = st.query_params
+    token = query_params.get("token", None)
+
+    data = load_json(DB_FILE)
+    visitor = data.get("visitor")
+
+    if not visitor or (token and visitor.get("token") != token):
+        st.info("No active visitor records yet.")
+        return
+
+    expiry_time = datetime.fromisoformat(visitor["expiry_time"])
+    if datetime.now() > expiry_time:
+        st.error("⏱ QR Expired (End of Day)")
+        return
+
+    st.subheader("Visitor Information")
+    st.write(f"**Visitor Name:** {visitor['visitor_name']}")
+    st.write(f"**Homeowner Name:** {visitor['homeowner_name']}")
+    st.write(f"**Block Number:** {visitor['block_number']}")
+    st.write(f"**Purpose:** {visitor['purpose']}")
+    st.write(f"**Estimated Time:** {visitor['estimated_time']}")
+
+    if not visitor.get("scan_time"):
+        if st.button("✅ Confirm Entry"):
+            visitor["scan_time"] = datetime.now().isoformat()
+            data["visitor"] = visitor
+            save_json(DB_FILE, data)
+            st.success("Entry confirmed. Timer started.")
+            st.rerun()
+    else:
+        scanned_at = datetime.fromisoformat(visitor["scan_time"])
+        st.write(f"**Scanned At:** {scanned_at.strftime('%H:%M:%S')}")
+        estimated_duration = parse_estimated_time(visitor["estimated_time"])
+        end_time = scanned_at + estimated_duration
+        remaining = end_time - datetime.now()
+        if remaining.total_seconds() > 0:
+            st.success(f"⏳ Time Left: {str(remaining).split('.')[0]}")
+        else:
+            st.error("⏱ Visitor's estimated time has expired.")
+        st_autorefresh(interval=1000, key="security_refresh")
+
+
+# ---------------------------
+# Admin Page
+# ---------------------------
 def page_admin():
-    st.title("👩‍💼 Admin Approval Page")
-    pending = load_data(PENDING_FILE)
-    approved = load_data(DATA_FILE)
+    st.title("🧑‍💼 Admin Dashboard - Approve New Accounts")
+
+    pending = load_json(PENDING_FILE)
+    users = load_json(USERS_FILE)
 
     if not pending:
         st.info("No pending registration requests.")
         return
 
-    st.subheader("Pending Accounts:")
-    for user, pwd in pending.items():
-        col1, col2 = st.columns([3, 1])
-        col1.write(f"👤 **{user}**")
-        if col2.button("Approve", key=user):
-            approved[user] = pwd
-            save_data(approved, DATA_FILE)
-            del pending[user]
-            save_data(pending, PENDING_FILE)
-            st.success(f"✅ {user} approved!")
+    df = pd.DataFrame([
+        {"Email": email, "Phone": info["phone"], "Submitted": info["submitted_at"]}
+        for email, info in pending.items()
+    ])
 
-def page_login():
-    st.title("🔐 Homeowner Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    st.dataframe(df, use_container_width=True)
 
-    if st.button("Login"):
-        data = load_data(DATA_FILE)
-        if username in data and data[username] == hash_password(password):
-            st.session_state["logged_in"] = True
-            st.session_state["username"] = username
-            st.success("✅ Login successful!")
-        else:
-            st.error("❌ Invalid username or password.")
+    selected_email = st.selectbox("Select an email to review:", list(pending.keys()))
+    if selected_email:
+        info = pending[selected_email]
+        st.write(f"**Phone:** {info['phone']}")
+        st.write(f"**Submitted:** {info['submitted_at']}")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Approve"):
+                users[selected_email] = {"phone": info["phone"], "password": info["password"]}
+                save_json(USERS_FILE, users)
+                del pending[selected_email]
+                save_json(PENDING_FILE, pending)
+                st.success(f"Approved {selected_email}")
+                st.rerun()
+        with col2:
+            if st.button("❌ Reject"):
+                del pending[selected_email]
+                save_json(PENDING_FILE, pending)
+                st.warning(f"Rejected {selected_email}")
+                st.rerun()
 
-def page_homeowner():
-    st.title("🏡 Generate Visitor QR Code")
 
-    if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
-        st.warning("Please log in first.")
+# ---------------------------
+# Main App
+# ---------------------------
+def main(public_url):
+    raw_page = st.query_params.get("page")
+    page_param = None
+    if isinstance(raw_page, list) and raw_page:
+        page_param = raw_page[0]
+    elif isinstance(raw_page, str):
+        page_param = raw_page
+
+    page_clean = page_param.lower() if page_param else None
+
+    if page_clean == "visitor":
+        page_visitor()
+        return
+    if page_clean == "security":
+        page_security()
+        return
+    if page_clean == "admin":
+        page_admin()
         return
 
-    visitor_name = st.text_input("Visitor Name")
-    duration_input = st.text_input("Access Duration (e.g. '1 hour', '30 mins')")
-    generate_btn = st.button("Generate QR")
-
-    if generate_btn and visitor_name:
-        duration = parse_time_input(duration_input)
-        expiry = datetime.now() + duration
-
-        payload = {
-            "visitor": visitor_name,
-            "expires_at": expiry.strftime("%Y-%m-%d %H:%M:%S")
-        }
-
-        qr_data = json.dumps(payload)
-        qr_img = generate_qr(qr_data)
-
-        st.image(qr_img, caption=f"QR for {visitor_name}", use_column_width=False)
-        st.success(f"QR valid until {expiry.strftime('%H:%M:%S')}")
-
-def page_visitor():
-    st.title("🎫 Visitor Verification")
-
-    uploaded_file = st.file_uploader("Upload your ID card", type=["jpg", "jpeg", "png"])
-    if uploaded_file is not None:
-        st.image(uploaded_file, caption="Uploaded ID", use_column_width=True)
-
-        with st.spinner("Verifying ID..."):
-            valid_id = verify_id(uploaded_file, confidence_threshold=0.7)
-
-        if valid_id:
-            st.success("✅ ID Verified Successfully!")
-            qr = qrcode.make("Visitor verified successfully")
-            buf = BytesIO()
-            qr.save(buf)
-            st.image(buf.getvalue(), caption="Your Access QR Code")
+    if not st.session_state.get("logged_in", False):
+        if st.session_state.get("show_login", True):
+            page_login()
         else:
-            st.error("❌ Invalid ID detected. Please upload a valid government-issued ID.")
+            page_register()
+        return
 
-def page_security():
-    st.title("🛡️ Security Verification")
-    uploaded_file = st.file_uploader("Scan Visitor QR", type=["png", "jpg", "jpeg"])
-    if uploaded_file is not None:
-        img = cv2.imdecode(np.frombuffer(uploaded_file.read(), np.uint8), cv2.IMREAD_COLOR)
-        from pyzbar.pyzbar import decode
-        decoded = decode(img)
-        if decoded:
-            data = json.loads(decoded[0].data.decode())
-            exp = datetime.strptime(data["expires_at"], "%Y-%m-%d %H:%M:%S")
-            if datetime.now() < exp:
-                st.success(f"✅ Access granted for {data['visitor']}")
-            else:
-                st.error("❌ QR code expired!")
-        else:
-            st.error("❌ Invalid QR code!")
+    PAGES = {"Generator": lambda: page_generator(public_url)}
 
-# -------------------- MAIN --------------------
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Register", "Admin", "Login", "Homeowner", "Visitor", "Security"])
+    page = st.sidebar.radio("Navigate", list(PAGES.keys()), index=0)
+    st.sidebar.divider()
+    if st.sidebar.button("🚪 Logout"):
+        st.session_state.clear()
+        st.success("Logged out successfully.")
+        st.rerun()
 
-if page == "Register":
-    page_register()
-elif page == "Admin":
-    page_admin()
-elif page == "Login":
-    page_login()
-elif page == "Homeowner":
-    page_homeowner()
-elif page == "Visitor":
-    page_visitor()
-elif page == "Security":
-    page_security()
+    PAGES[page]()
+
+
+# ---------------------------
+# Run App
+# ---------------------------
+if __name__ == "__main__":
+    st.session_state.setdefault(
+        "public_url", "https://app-qrcode-kbtgae6rj8r2qrdxprggcm.streamlit.app/"
+    )
+    main(st.session_state["public_url"])
