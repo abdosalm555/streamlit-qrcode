@@ -20,7 +20,6 @@ PENDING_FILE = "pending_users.json"
 DB_FILE = "scans.json"
 MODEL_PATH = "best.pt"  # <-- Your AI model file
 
-
 # ---------------------------
 # Helpers
 # ---------------------------
@@ -57,21 +56,34 @@ def get_end_of_day():
 
 def parse_estimated_time(time_str):
     """Smart time parser – handles 1h, 1 hr, 1 hour, 30 mins, etc."""
-    s = time_str.lower().strip()
+    s = (time_str or "").lower().strip()
     try:
-        if "hour" in s or "hr" in s or "h" in s:
-            num = float(s.split()[0].replace("h", ""))
-            return timedelta(hours=num)
-        if "min" in s or "m" in s:
-            num = float(s.split()[0].replace("m", ""))
-            return timedelta(minutes=num)
-        if ":" in s:  # 1:30 -> 1 hour 30 mins
+        # Accept forms like: "1", "1h", "1 h", "1hr", "1 hour", "30m", "30 min", "1:30"
+        if ":" in s:
             h, m = s.split(":")
             return timedelta(hours=int(h), minutes=int(m))
+        # look for number (possibly float) at start
+        import re
+        mnum = re.match(r"([0-9]*\.?[0-9]+)", s)
+        if mnum:
+            num = float(mnum.group(1))
+            if "h" in s or "hour" in s or "hr" in s:
+                return timedelta(hours=num)
+            if "m" in s or "min" in s:
+                return timedelta(minutes=num)
+            # no unit — assume minutes if large? we'll assume minutes by default
+            return timedelta(minutes=num)
     except Exception:
         pass
-    return timedelta(minutes=30)
+    return timedelta(minutes=30)  # fallback default
 
+# ---------------------------
+# YOLO model loader (cached)
+# ---------------------------
+@st.cache_resource
+def load_model():
+    # Will raise if model file missing — let exception show in logs/UI
+    return YOLO(MODEL_PATH)
 
 # ---------------------------
 # Registration Page
@@ -158,18 +170,18 @@ def page_generator(public_url):
 
         expiry_time = get_end_of_day()
 
-        data = {
-            "visitor": {
-                "token": token,
-                "visitor_name": visitor_name,
-                "homeowner_name": homeowner_email,
-                "block_number": block_number,
-                "purpose": purpose,
-                "estimated_time": estimated_time,
-                "scan_time": None,
-                "expiry_time": expiry_time.isoformat(),
-                "id_uploaded": False,
-            }
+        data = load_json(DB_FILE)
+        # Save full DB structure to avoid overwriting other keys if they exist
+        data["visitor"] = {
+            "token": token,
+            "visitor_name": visitor_name,
+            "homeowner_name": homeowner_email,
+            "block_number": block_number,
+            "purpose": purpose,
+            "estimated_time": estimated_time,
+            "scan_time": None,
+            "expiry_time": expiry_time.isoformat(),
+            "id_uploaded": False,
         }
         save_json(DB_FILE, data)
 
@@ -178,7 +190,7 @@ def page_generator(public_url):
 
 
 # ---------------------------
-# Visitor Page with AI Model Verification
+# Visitor Page with AI Model Confidence Check
 # ---------------------------
 def page_visitor():
     from streamlit_autorefresh import st_autorefresh
@@ -203,47 +215,86 @@ def page_visitor():
         st.error("⏱ QR Expired (End of Day)")
         return
 
-    # ---- AI ID verification ----
+    # If ID not uploaded/approved yet -> ask for upload and validate via model
     if not visitor.get("id_uploaded"):
         st.subheader("📸 Upload Your ID")
         uploaded_id = st.file_uploader("Upload your ID (Image Only)", type=["jpg", "jpeg", "png"])
 
         if uploaded_id:
-            st.info("Running AI model for ID validation...")
+            st.info("Running AI model for ID validation (requires model to be present)...")
+            # Save temporary file
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                 tmp.write(uploaded_id.getvalue())
                 tmp_path = tmp.name
 
             try:
-                model = YOLO(MODEL_PATH)
-                results = model.predict(tmp_path, conf=0.5, verbose=False)
-                conf_scores = results[0].boxes.conf.tolist()
+                # Load cached model
+                model = load_model()
 
-                if conf_scores and max(conf_scores) >= 0.7:  # threshold 70%
+                # Run inference (we'll collect confidences of detected boxes)
+                # verbose=False to avoid heavy prints
+                results = model.predict(tmp_path, conf=0.001, verbose=False)
+
+                # Extract confidences robustly
+                conf_scores = []
+                if len(results) > 0:
+                    r0 = results[0]
+                    # r0.boxes.conf may be a tensor or numpy array depending on version
+                    try:
+                        # prefer .tolist() when available
+                        conf_scores = r0.boxes.conf.tolist()
+                    except Exception:
+                        # fallback: iterate boxes
+                        try:
+                            conf_scores = [float(b.conf) for b in r0.boxes]
+                        except Exception:
+                            conf_scores = []
+
+                # Debug: st.write(conf_scores)  # uncomment if you want to see raw confidences
+
+                # Decision: accept if any confidence >= 0.70
+                if conf_scores and max(conf_scores) >= 0.70:
                     visitor["id_uploaded"] = True
                     visitor["id_filename"] = uploaded_id.name
                     data["visitor"] = visitor
                     save_json(DB_FILE, data)
-                    st.success("✅ Valid ID detected and approved.")
-                    os.remove(tmp_path)
+                    st.success("✅ Valid ID detected and approved (confidence >= 70%).")
+                    # cleanup and rerun to show QR
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
                     st.rerun()
                 else:
-                    st.error("❌ Low confidence: Not a valid ID image. Try again.")
-                    os.remove(tmp_path)
+                    # show most informative message
+                    top_conf = max(conf_scores) if conf_scores else None
+                    if top_conf is None:
+                        st.error("❌ No ID-like object detected. Please upload a clear ID image.")
+                    else:
+                        st.error(f"❌ Low confidence ({top_conf:.2f}). Not a valid ID image — please try again.")
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
                     return
             except Exception as e:
                 st.error(f"AI model error: {e}")
-                os.remove(tmp_path)
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
                 return
         else:
             st.warning("⚠ Please upload your ID to proceed.")
             return
 
+    # If we reach here, ID is approved — show QR for security scanning
     st.subheader("QR Code for Gate Entry")
     scan_link = f"{st.session_state.get('public_url', '')}/?page=Security&token={token}"
     qr_bytes = generate_qr(scan_link)
     st.image(qr_bytes, caption="QR Code for Security to Scan")
 
+    # Countdown display if already scanned by security
     if visitor.get("scan_time"):
         st.subheader("⏳ Time Remaining")
         scanned_at = datetime.fromisoformat(visitor["scan_time"])
@@ -272,22 +323,26 @@ def page_security():
     data = load_json(DB_FILE)
     visitor = data.get("visitor")
 
+    # If there's no visitor or token mismatch, show message
     if not visitor or (token and visitor.get("token") != token):
         st.info("No active visitor records yet.")
         return
 
+    # Check end-of-day expiry
     expiry_time = datetime.fromisoformat(visitor["expiry_time"])
     if datetime.now() > expiry_time:
         st.error("⏱ QR Expired (End of Day)")
         return
 
+    # Show visitor info
     st.subheader("Visitor Information")
-    st.write(f"**Visitor Name:** {visitor['visitor_name']}")
-    st.write(f"**Homeowner Name:** {visitor['homeowner_name']}")
-    st.write(f"**Block Number:** {visitor['block_number']}")
-    st.write(f"**Purpose:** {visitor['purpose']}")
-    st.write(f"**Estimated Time:** {visitor['estimated_time']}")
+    st.write(f"**Visitor Name:** {visitor.get('visitor_name','-')}")
+    st.write(f"**Homeowner Name:** {visitor.get('homeowner_name','-')}")
+    st.write(f"**Block Number:** {visitor.get('block_number','-')}")
+    st.write(f"**Purpose:** {visitor.get('purpose','-')}")
+    st.write(f"**Estimated Time:** {visitor.get('estimated_time','-')}")
 
+    # Confirm entry -> set scan_time
     if not visitor.get("scan_time"):
         if st.button("✅ Confirm Entry"):
             visitor["scan_time"] = datetime.now().isoformat()
