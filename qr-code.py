@@ -57,13 +57,10 @@ def parse_estimated_time(time_str):
     """Smart time parser – handles 1h, 1 hr, 1 hour, 30 mins, etc."""
     s = (time_str or "").lower().strip()
     try:
-        # handle forms like "1h", "1 h", "1hr", "1 hr", "1.5h"
         if "hour" in s or "hr" in s or (s.endswith("h") and len(s) > 1):
-            # extract leading numeric token
             num_token = s.split()[0].replace("h", "").replace("hr", "")
             num = float(num_token)
             return timedelta(hours=num)
-        # minutes: "30min", "30 mins", "30 m"
         if "min" in s or (s.endswith("m") and len(s) > 1):
             num_token = s.split()[0].replace("min", "").replace("m", "")
             num = float(num_token)
@@ -73,7 +70,6 @@ def parse_estimated_time(time_str):
             return timedelta(hours=int(h), minutes=int(m))
     except Exception:
         pass
-    # fallback default
     return timedelta(minutes=30)
 
 # ---------------------------
@@ -85,7 +81,7 @@ def ensure_security_file():
 
 def load_security_accounts():
     ensure_security_file()
-    return load_json(SECURITY_FILE)  # list of dicts [{"username":..., "password":...}, ...]
+    return load_json(SECURITY_FILE)
 
 def save_security_accounts(accounts):
     save_json(SECURITY_FILE, accounts)
@@ -200,7 +196,7 @@ def page_generator(public_url):
         st.info(f"QR valid until **{expiry_time.strftime('%H:%M:%S')}** today")
 
 # ---------------------------
-# Security login (for security guards)
+# Security login widget
 # ---------------------------
 def security_login_widget():
     st.subheader("Security Login")
@@ -221,7 +217,7 @@ def security_login_widget():
             st.error("Invalid security credentials.")
 
 # ---------------------------
-# Visitor Page (with AI ID verification & confidence check)
+# Visitor Page (AI ID verification)
 # ---------------------------
 def page_visitor():
     from streamlit_autorefresh import st_autorefresh
@@ -246,7 +242,6 @@ def page_visitor():
         st.error("⏱ QR Expired (End of Day)")
         return
 
-    # ID upload + AI verification (confidence threshold: 70%)
     if not visitor.get("id_uploaded"):
         st.subheader("📸 Upload Your ID")
         uploaded_id = st.file_uploader("Upload your ID (Image Only)", type=["jpg", "jpeg", "png"])
@@ -256,24 +251,20 @@ def page_visitor():
                 tmp.write(uploaded_id.getvalue())
                 tmp_path = tmp.name
 
-            # Load model and run inference
             try:
                 model = YOLO(MODEL_PATH)
-                results = model.predict(tmp_path, conf=0.25, verbose=False)  # low conf to get boxes
+                results = model.predict(tmp_path, conf=0.25, verbose=False)
             except Exception as e:
                 os.remove(tmp_path)
                 st.error(f"Model error: {e}")
                 return
 
-            # Check boxes for 'id' label and confidence >= 70%
             found_valid_id = False
             if len(results) > 0 and hasattr(results[0], "boxes"):
-                boxes = results[0].boxes
-                for box in boxes:
+                for box in results[0].boxes:
                     cls = int(box.cls)
                     label = model.names[cls].lower()
-                    conf = float(box.conf) * 100.0  # convert to percent
-                    # Accept if label mentions "id" and conf >= 70
+                    conf = float(box.conf) * 100.0
                     if "id" in label and conf >= 70.0:
                         found_valid_id = True
                         break
@@ -285,22 +276,20 @@ def page_visitor():
                 visitor["id_filename"] = uploaded_id.name
                 data["visitor"] = visitor
                 save_json(DB_FILE, data)
-                st.success("✅ Valid ID detected and approved (confidence >= 70%).")
+                st.success("✅ Valid ID detected (confidence >= 70%).")
                 st.rerun()
             else:
-                st.error("❌ No valid ID detected with sufficient confidence (>=70%). Please try again with a clear photo of the ID.")
+                st.error("❌ No valid ID detected with sufficient confidence.")
                 return
         else:
             st.warning("⚠ Please upload your ID to proceed.")
             return
 
-    # Show QR for Security (security will need to login to confirm)
     st.subheader("QR Code for Gate Entry")
     scan_link = f"{st.session_state.get('public_url', '')}/?page=Security&token={token}"
     qr_bytes = generate_qr(scan_link)
     st.image(qr_bytes, caption="QR Code for Security to Scan")
 
-    # Show countdown if already scanned
     if visitor.get("scan_time"):
         st.subheader("⏳ Time Remaining")
         scanned_at = datetime.fromisoformat(visitor["scan_time"])
@@ -316,29 +305,25 @@ def page_visitor():
         st.info("⌛ Waiting for Security to confirm your entry.")
 
 # ---------------------------
-# Security Page (requires security login)
+# Security Page
 # ---------------------------
 def page_security():
     from streamlit_autorefresh import st_autorefresh
     st.title("🛡 Security Dashboard")
 
-    # if not logged in as security, show login widget and stop
     if not st.session_state.get("security_logged_in", False):
         security_login_widget()
         st.stop()
 
-    # At this point security is logged in
     query_params = st.query_params
     token = query_params.get("token", None)
 
     data = load_json(DB_FILE)
     visitor = data.get("visitor")
 
-    # If no visitor loaded or token mismatch -> but still allow scanning by scanning QR with token
     if token:
-        # route with token: check and ensure visitor matches
         if not visitor or visitor.get("token") != token:
-            st.error("❌ Scanned QR not valid or not recognized.")
+            st.error("❌ Scanned QR not valid.")
             return
 
     if not visitor:
@@ -357,7 +342,6 @@ def page_security():
     st.write(f"**Purpose:** {visitor['purpose']}")
     st.write(f"**Estimated Time:** {visitor['estimated_time']}")
 
-    # Confirm entry only if security logged in:
     if not visitor.get("scan_time"):
         if st.button("✅ Confirm Entry (Security)"):
             visitor["scan_time"] = datetime.now().isoformat()
@@ -367,17 +351,14 @@ def page_security():
             st.rerun()
     else:
         scanned_at = datetime.fromisoformat(visitor["scan_time"])
-        st.write(f"**Scanned At:** {scanned_at.strftime('%H:%M:%S')}")
         estimated_duration = parse_estimated_time(visitor["estimated_time"])
-        end_time = scanned_at + estimated_duration
-        remaining = end_time - datetime.now()
+        remaining = scanned_at + estimated_duration - datetime.now()
         if remaining.total_seconds() > 0:
             st.success(f"⏳ Time Left: {str(remaining).split('.')[0]}")
         else:
             st.error("⏱ Visitor's estimated time has expired.")
         st_autorefresh(interval=1000, key="security_refresh")
 
-    # Allow security to logout
     if st.sidebar.button("🔒 Security Logout"):
         st.session_state.pop("security_logged_in", None)
         st.session_state.pop("security_user", None)
@@ -385,15 +366,32 @@ def page_security():
         st.rerun()
 
 # ---------------------------
-# Admin Page
+# Admin Page (Protected)
 # ---------------------------
 def page_admin():
     st.title("🧑‍💼 Admin Dashboard - Approve New Accounts & Manage Security")
 
+    # 🔒 Admin login
+    if "admin_logged_in" not in st.session_state:
+        st.subheader("Admin Login Required")
+        username = st.text_input("Admin Username")
+        password = st.text_input("Admin Password", type="password")
+
+        if st.button("Login"):
+            admin_user = st.secrets["admin"]["username"]
+            admin_pass = st.secrets["admin"]["password"]
+            if username == admin_user and password == admin_pass:
+                st.session_state["admin_logged_in"] = True
+                st.success("✅ Logged in as Admin")
+                st.rerun()
+            else:
+                st.error("Invalid admin credentials.")
+        return
+
+    # ---- Main Admin UI ----
     pending = load_json(PENDING_FILE)
     users = load_json(USERS_FILE)
 
-    # Pending homeowners table
     st.subheader("Pending Homeowner Registrations")
     if not pending:
         st.info("No pending registration requests.")
@@ -426,7 +424,6 @@ def page_admin():
                     st.rerun()
 
     st.markdown("---")
-    # Manage security accounts
     st.subheader("Security Accounts (create / list)")
     accounts = load_security_accounts()
     if accounts:
@@ -435,7 +432,6 @@ def page_admin():
     else:
         st.info("No security accounts yet.")
 
-    st.write("Create new security account:")
     new_sec_user = st.text_input("Security username", key="new_sec_user")
     new_sec_pass = st.text_input("Security password", type="password", key="new_sec_pass")
     if st.button("Create Security Account"):
@@ -453,17 +449,9 @@ def page_admin():
 # Main App
 # ---------------------------
 def main(public_url):
-    # read & normalize page query param
     raw_page = st.query_params.get("page")
-    page_param = None
-    if isinstance(raw_page, list) and raw_page:
-        page_param = raw_page[0]
-    elif isinstance(raw_page, str):
-        page_param = raw_page
+    page_clean = raw_page.lower() if isinstance(raw_page, str) else None
 
-    page_clean = page_param.lower() if page_param else None
-
-    # direct routes
     if page_clean == "visitor":
         page_visitor()
         return
@@ -474,7 +462,6 @@ def main(public_url):
         page_admin()
         return
 
-    # if homeowner not logged in, show login/register
     if not st.session_state.get("logged_in", False):
         if st.session_state.get("show_login", True):
             page_login()
@@ -482,20 +469,16 @@ def main(public_url):
             page_register()
         return
 
-    # Logged-in homeowner UI
     PAGES = {"Generator": lambda: page_generator(public_url)}
     page = st.sidebar.radio("Navigate", list(PAGES.keys()), index=0)
 
-    # Logout button for homeowners
     st.sidebar.divider()
     if st.sidebar.button("🚪 Logout"):
-        # clear homeowner session keys but keep security login separate
         keys_to_keep = [k for k in st.session_state.keys() if k.startswith("security")]
         all_keys = list(st.session_state.keys())
         for k in all_keys:
             if not k.startswith("security"):
                 st.session_state.pop(k, None)
-        # re-add any security keys if they existed
         for k in keys_to_keep:
             pass
         st.success("Logged out successfully.")
@@ -507,7 +490,6 @@ def main(public_url):
 # Run App
 # ---------------------------
 if __name__ == "__main__":
-    # ensure security file exists
     ensure_security_file()
 
     st.session_state.setdefault(
